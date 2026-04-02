@@ -1,0 +1,207 @@
+// PowerBI Queries para Investment Data Analysis Agent
+// Copiar y pegar en PowerBI Desktop -> Transformar Datos -> Nueva Consulta -> Consulta en Blanco
+
+// =================================
+// QUERY 1: FUNDS OVERVIEW (Principal)
+// =================================
+let
+    // Conectar a API demo
+    Source = Json.Document(Web.Contents("http://localhost:8001/api/v1/powerbi-demo/funds-overview")),
+    
+    // Extraer array de datos
+    data = Source[data],
+    
+    // Convertir a tabla
+    #"Converted to Table" = Table.FromList(data, Splitter.SplitByNothing(), null, null, ExtraValues.Error),
+    
+    // Expandir todas las columnas
+    #"Expanded Column1" = Table.ExpandRecordColumn(#"Converted to Table", "Column1", 
+        {"PshipID", "FundName", "FundType", "TotalAssets", "YTDReturn", 
+         "Benchmark", "RiskLevel", "Currency", "InceptionDate", "Status"}),
+    
+    // Convertir tipos de datos
+    #"Changed Type" = Table.TransformColumnTypes(#"Expanded Column1",{
+        {"PshipID", Int64.Type},
+        {"FundName", type text},
+        {"FundType", type text},
+        {"TotalAssets", Currency.Type},
+        {"YTDReturn", Percentage.Type},
+        {"Benchmark", type text},
+        {"RiskLevel", Int64.Type},
+        {"Currency", type text},
+        {"InceptionDate", type date},
+        {"Status", type text}
+    }),
+    
+    // Agregar columnas calculadas
+    #"Added AUM Billions" = Table.AddColumn(#"Changed Type", "AUM_Billions", 
+        each [TotalAssets] / 1000000000, Currency.Type),
+    
+    #"Added Risk Category" = Table.AddColumn(#"Added AUM Billions", "RiskCategory", 
+        each if [RiskLevel] <= 2 then "Low Risk" 
+             else if [RiskLevel] = 3 then "Medium Risk" 
+             else "High Risk"),
+             
+    #"Added Return Category" = Table.AddColumn(#"Added Risk Category", "ReturnCategory",
+        each if [YTDReturn] < 0 then "Negative"
+             else if [YTDReturn] < 0.05 then "Below 5%"
+             else if [YTDReturn] < 0.15 then "5%-15%"
+             else "Above 15%")
+in
+    #"Added Return Category"
+
+// =================================
+// QUERY 2: KPIs DASHBOARD
+// =================================
+let
+    Source = Json.Document(Web.Contents("http://localhost:8001/api/v1/powerbi-demo/kpis-dashboard")),
+    kpis = Source[kpis],
+    
+    // Crear tabla con KPIs principales
+    KPITable = #table(
+        {"KPI_Name", "Value", "Format_Type", "Change_Pct", "Benchmark"},
+        {
+            {"Total AUM", kpis[aum_total][value], "Currency", kpis[aum_total][change_pct], null},
+            {"Average Return", kpis[average_return][value], "Percentage", null, kpis[average_return][benchmark]},
+            {"Active Funds", kpis[active_funds][value], "Number", null, null},
+            {"Portfolio Risk", kpis[risk_score][portfolio_risk], "Number", null, kpis[risk_score][max_risk]},
+            {"Top Fund Return", kpis[top_fund][return], "Percentage", null, null}
+        }
+    ),
+    
+    #"Changed Type" = Table.TransformColumnTypes(KPITable,{
+        {"Value", type number},
+        {"Change_Pct", type number},
+        {"Benchmark", type number}
+    })
+in
+    #"Changed Type"
+
+// =================================
+// QUERY 3: PORTFOLIO ANALYTICS
+// =================================
+let
+    Source = Json.Document(Web.Contents("http://localhost:8001/api/v1/powerbi-demo/portfolio-analytics")),
+    
+    // Extraer asset allocation
+    asset_allocation = Source[asset_allocation],
+    
+    // Convertir a tabla
+    AssetTable = Record.ToTable(asset_allocation),
+    
+    // Renombrar columnas
+    #"Renamed Columns" = Table.RenameColumns(AssetTable,{
+        {"Name", "AssetClass"}, 
+        {"Value", "AUM_Amount"}
+    }),
+    
+    // Convertir tipos
+    #"Changed Type" = Table.TransformColumnTypes(#"Renamed Columns",{
+        {"AUM_Amount", Currency.Type}
+    }),
+    
+    // Agregar porcentajes
+    TotalAUM = List.Sum(#"Changed Type"[AUM_Amount]),
+    #"Added Percentage" = Table.AddColumn(#"Changed Type", "Percentage", 
+        each [AUM_Amount] / TotalAUM, Percentage.Type)
+in
+    #"Added Percentage"
+
+// =================================
+// QUERY 4: FUND POSITIONS (Con Parámetro)
+// =================================
+// Nota: Crear parámetro "SelectedFundID" = 1 primero
+let
+    // Usar parámetro para Fund ID dinámico
+    FundID = SelectedFundID,
+    
+    Source = Json.Document(Web.Contents("http://localhost:8001/api/v1/powerbi-demo/fund-positions/" & Number.ToText(FundID))),
+    
+    positions = Source[positions],
+    
+    #"Converted to Table" = Table.FromList(positions, Splitter.SplitByNothing(), null, null, ExtraValues.Error),
+    
+    #"Expanded Column1" = Table.ExpandRecordColumn(#"Converted to Table", "Column1", 
+        {"PshipID", "SecurityID", "SecurityName", "AssetClass", "Sector", 
+         "MarketValue", "Weight", "Shares", "Price", "Currency"}),
+    
+    #"Changed Type" = Table.TransformColumnTypes(#"Expanded Column1",{
+        {"PshipID", Int64.Type},
+        {"SecurityID", type text},
+        {"SecurityName", type text},
+        {"AssetClass", type text},
+        {"Sector", type text},
+        {"MarketValue", Currency.Type},
+        {"Weight", Percentage.Type},
+        {"Shares", Int64.Type},
+        {"Price", Currency.Type},
+        {"Currency", type text}
+    })
+in
+    #"Changed Type"
+
+// =================================
+// QUERY 5: FUND PERFORMANCE (Con Parámetro)
+// =================================  
+let
+    FundID = SelectedFundID,
+    
+    Source = Json.Document(Web.Contents("http://localhost:8001/api/v1/powerbi-demo/fund-performance/" & Number.ToText(FundID))),
+    
+    performance = Source[performance],
+    
+    #"Converted to Table" = Table.FromList(performance, Splitter.SplitByNothing(), null, null, ExtraValues.Error),
+    
+    #"Expanded Column1" = Table.ExpandRecordColumn(#"Converted to Table", "Column1", 
+        {"Date", "NAV", "MonthlyReturn", "AccumulatedReturn", "Benchmark", "Assets"}),
+    
+    #"Changed Type" = Table.TransformColumnTypes(#"Expanded Column1",{
+        {"Date", type date},
+        {"NAV", type number},
+        {"MonthlyReturn", Percentage.Type},
+        {"AccumulatedReturn", Percentage.Type},
+        {"Benchmark", type number},
+        {"Assets", Currency.Type}
+    })
+in
+    #"Changed Type"
+
+// =================================
+// PARÁMETROS A CREAR
+// =================================
+/*
+1. Crear parámetro "SelectedFundID":
+   - Tipo: Número entero
+   - Valor actual: 1
+   - Valores sugeridos: 1 a 52
+
+2. URLs Base para referencias:
+   - BaseURL = "http://localhost:8001/api/v1/powerbi-demo"
+*/
+
+// =================================
+// MEDIDAS DAX RECOMENDADAS
+// =================================
+/*
+// Total AUM
+Total AUM = SUM('Funds Overview'[TotalAssets])
+
+// Average Return
+Avg Return = AVERAGE('Funds Overview'[YTDReturn])
+
+// Count Active Funds  
+Active Funds = COUNTROWS(FILTER('Funds Overview', 'Funds Overview'[Status] = "Active"))
+
+// Top Performer
+Top Fund Return = MAX('Funds Overview'[YTDReturn])
+
+// Portfolio Risk Score
+Avg Risk = AVERAGE('Funds Overview'[RiskLevel])
+
+// Asset Allocation %
+Asset Allocation % = 
+DIVIDE(
+    'Portfolio Analytics'[AUM_Amount],
+    CALCULATE(SUM('Portfolio Analytics'[AUM_Amount]), ALLEXCEPT('Portfolio Analytics'))
+)
+*/

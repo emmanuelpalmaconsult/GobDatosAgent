@@ -1,0 +1,100 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database para Analytics (usando contenedor existente postgres-learn)
+  # NOTA: Este servicio está comentado porque usas tu contenedor existente
+  # analytics-db:
+  #   image: postgres:15
+  #   container_name: investment-analytics
+  #   environment:
+  #     POSTGRES_DB: InvestmentAnalytics
+  #     POSTGRES_USER: analytics_user
+  #     POSTGRES_PASSWORD: analytics_password
+      # Configuraciones adicionales de PostgreSQL
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    ports:
+      - "5432:5432"
+    volumes:
+      # Almacenamiento persistente
+      - analytics_data:/var/lib/postgresql/data
+      # Script de inicialización
+      - ./scripts/init_analytics_db.sql:/docker-entrypoint-initdb.d/01-init.sql
+      # Configuración personalizada de PostgreSQL (opcional)
+      - ./postgresql.conf:/etc/postgresql/postgresql.conf
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U analytics_user -d InvestmentAnalytics"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - investment-network
+
+  # pgAdmin para administración de BD (opcional)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: investment-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@investment.local
+      PGADMIN_DEFAULT_PASSWORD: admin_password
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "8080:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      analytics-db:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - investment-network
+    profiles:
+      - admin  # Solo se ejecuta con: docker-compose --profile admin up
+
+  # Redis para caché (opcional, para optimizar consultas)
+  redis-cache:
+    image: redis:7-alpine
+    container_name: investment-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    networks:
+      - investment-network
+    profiles:
+      - cache  # Solo se ejecuta con: docker-compose --profile cache up
+
+volumes:
+  analytics_data:
+    name: investment_analytics_data
+  pgadmin_data:
+    name: investment_pgadmin_data
+  redis_data:
+    name: investment_redis_data
+
+networks:
+  investment-network:
+    name: investment_network
+    driver: bridge
+
+---
+# Configuraciones adicionales disponibles:
+
+# Para usar perfiles específicos:
+# docker-compose up -d                          # Solo PostgreSQL
+# docker-compose --profile admin up -d          # PostgreSQL + pgAdmin
+# docker-compose --profile cache up -d          # PostgreSQL + Redis
+# docker-compose --profile admin --profile cache up -d  # Todo
+
+# Variables de entorno personalizables (crea .env en la raíz):
+# POSTGRES_DB=InvestmentAnalytics
+# POSTGRES_USER=analytics_user  
+# POSTGRES_PASSWORD=tu_password_seguro
+# POSTGRES_PORT=5432
+# PGADMIN_EMAIL=tu-email@empresa.com
+# PGADMIN_PASSWORD=tu_password_admin
+# PGADMIN_PORT=8080
+# REDIS_PORT=6379

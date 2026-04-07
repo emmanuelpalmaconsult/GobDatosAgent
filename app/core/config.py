@@ -81,11 +81,23 @@ class Settings(BaseSettings):
     # =============================================================================
     # API CONFIGURATION  
     # =============================================================================
+    API_HOST: str = Field(default="0.0.0.0")
+    API_PORT: int = Field(default=8000)
+    API_RELOAD: bool = Field(default=False)
     API_PREFIX: str = Field(default="/api/v1")
     CORS_ORIGINS: List[str] = Field(default=["http://localhost:3000", "http://localhost:8080"])
     DEBUG: bool = Field(default=True)
     ENVIRONMENT: str = Field(default="development")
     
+    # =============================================================================
+    # OPTIONAL SERVICES
+    # =============================================================================
+    PGADMIN_EMAIL: Optional[str] = Field(default=None)
+    PGADMIN_PASSWORD: Optional[str] = Field(default=None)
+    REDIS_HOST: Optional[str] = Field(default=None)
+    REDIS_PORT: Optional[int] = Field(default=None)
+    REDIS_DB: Optional[int] = Field(default=None)
+
     # =============================================================================
     # POWER BI INTEGRATION
     # =============================================================================

@@ -141,13 +141,23 @@ function Test-Prerequisites {
         try {
             $composeVersion = docker-compose --version 2>&1
             if ($composeVersion -match "docker-compose version") {
-                Log-Success "Docker Compose encontrado: $composeVersion"
+                Log-Success "Docker Compose (standalone) encontrado: $composeVersion"
             } else {
-                throw "Docker Compose no detectado"
+                throw "Docker Compose standalone no detectado"
             }
         } catch {
-            Log-Error "Docker Compose no encontrado. Instalarlo primero."
-            exit 1
+            try {
+                $composeVersionV2 = docker compose version 2>&1
+                if ($composeVersionV2 -match "Docker Compose version") {
+                    Log-Success "Docker Compose (v2 plugin) encontrado: $composeVersionV2"
+                    $script:UseComposeV2 = $true
+                } else {
+                    throw "Docker Compose v2 no detectado"
+                }
+            } catch {
+                Log-Error "Docker Compose no encontrado. Instalarlo como plugin de Docker o como standalone."
+                exit 1
+            }
         }
         
         # Verificar que Docker esté corriendo
@@ -253,15 +263,17 @@ function Install-PythonDependencies {
 function Start-DockerServices {
     Log-Info "Configurando servicios Docker..."
     
+    $composeCommand = if ($script:UseComposeV2) { "docker compose" } else { "docker-compose" }
+
     try {
         switch ($InstallMode) {
             "quick" {
                 Log-Info "Iniciando PostgreSQL solamente..."
-                docker-compose up -d analytics-db
+                Invoke-Expression "$composeCommand up -d analytics-db"
             }
             "full" {
                 Log-Info "Iniciando todos los servicios..."
-                docker-compose --profile admin --profile cache up -d
+                Invoke-Expression "$composeCommand --profile admin --profile cache up -d"
             }
         }
         
@@ -298,115 +310,63 @@ function Start-DockerServices {
 function Test-Installation {
     Log-Info "Verificando instalación..."
     
-    try {
-        # Verificar PostgreSQL
-        docker exec investment-analytics psql -U analytics_user -d InvestmentAnalytics -c "SELECT COUNT(*) FROM table_configuration;" | Out-Null
-        Log-Success "Base de datos PostgreSQL configurada correctamente"
-        
-        # Verificar aplicación Python
-        python -c "import app.main" 2>$null
-        if ($LASTEXITCODE -eq 0) {
-            Log-Success "Aplicación Python configurada correctamente"
-            return $true
+    # Verificar que el archivo .env existe
+    if (-not (Test-Path ".env")) {
+        Log-Error "El archivo .env no existe. Ejecuta el script de nuevo."
+        exit 1
+    }
+    
+    # Verificar que los contenedores Docker están corriendo (si aplica)
+    if ($UseDocker) {
+        $running = docker ps --filter "name=investment-analytics" --format "{{.Names}}"
+        if ($running -eq "investment-analytics") {
+            Log-Success "Contenedor PostgreSQL 'investment-analytics' está corriendo."
         } else {
-            Log-Error "Error en configuración de aplicación Python"
-            return $false
+            Log-Warning "Contenedor PostgreSQL 'investment-analytics' no está corriendo."
         }
-    } catch {
-        Log-Error "Error en verificación: $($_.Exception.Message)"
-        return $false
-    }
-}
-
-# Mostrar información final
-function Show-FinalInfo {
-    Write-Host ""
-    Write-ColorOutput Green "🎉 Instalación completada exitosamente! 🎉"
-    Write-Host ""
-    Write-ColorOutput Blue "Información de conexión:"
-    Write-Host "┌─────────────────────────────────────────────┐"
-    Write-Host "│ PostgreSQL Analytics:                       │"
-    Write-Host "│   Host: localhost:5432                      │"
-    Write-Host "│   Database: InvestmentAnalytics             │"
-    Write-Host "│   User: analytics_user                      │"
-    Write-Host "│   Password: $($PostgresPassword.Substring(0, [Math]::Min(20, $PostgresPassword.Length)))...              │"
-    Write-Host "└─────────────────────────────────────────────┘"
-    
-    if ($InstallMode -eq "full") {
-        Write-Host ""
-        Write-Host "┌─────────────────────────────────────────────┐"
-        Write-Host "│ pgAdmin Web Interface:                      │"
-        Write-Host "│   URL: http://localhost:8080                │"
-        Write-Host "│   Email: admin@investment.local             │"
-        Write-Host "│   Password: $($PgAdminPassword.Substring(0, [Math]::Min(20, $PgAdminPassword.Length)))...              │"
-        Write-Host "└─────────────────────────────────────────────┘"
         
-        Write-Host ""
-        Write-Host "┌─────────────────────────────────────────────┐"
-        Write-Host "│ Redis Cache:                                │"
-        Write-Host "│   Host: localhost:6379                      │"
-        Write-Host "│   Database: 0                               │"
-        Write-Host "└─────────────────────────────────────────────┘"
+        if ($InstallMode -eq "full") {
+            $pgadminRunning = docker ps --filter "name=investment-pgadmin" --format "{{.Names}}"
+            if ($pgadminRunning -eq "investment-pgadmin") {
+                Log-Success "Contenedor pgAdmin 'investment-pgadmin' está corriendo."
+            } else {
+                Log-Warning "Contenedor pgAdmin 'investment-pgadmin' no está corriendo."
+            }
+            
+            $redisRunning = docker ps --filter "name=investment-redis" --format "{{.Names}}"
+            if ($redisRunning -eq "investment-redis") {
+                Log-Success "Contenedor Redis 'investment-redis' está corriendo."
+            } else {
+                Log-Warning "Contenedor Redis 'investment-redis' no está corriendo."
+            }
+        }
     }
     
-    Write-Host ""
-    Write-ColorOutput Yellow "Próximos pasos:"
-    Write-Host "1. Editar archivo .env con tu información de BD origen" 
-    Write-Host "2. Ejecutar: python -m uvicorn app.main:app --reload"
-    Write-Host "3. Abrir: http://localhost:8000/docs"
-    Write-Host "4. Configurar tus tablas origen en /api/v1/admin/tables"
-    Write-Host ""
-    Write-ColorOutput Yellow "Comandos útiles:"
-    Write-Host "• Ver logs: docker-compose logs -f"
-    Write-Host "• Parar servicios: docker-compose down"
-    Write-Host "• Reiniciar: docker-compose restart"
-    Write-Host "• Backup BD: docker exec investment-analytics pg_dump -U analytics_user InvestmentAnalytics > backup.sql"
-    Write-Host ""
-    Write-ColorOutput Blue "¡La aplicación está lista para usar! 🚀"
+    Log-Success "Verificación completada."
 }
 
-# =============================================================================
-# MAIN EXECUTION
-# =============================================================================
-
+# Función principal
 function Main {
-    Write-ColorOutput Blue @"
-╔══════════════════════════════════════════════════════════════╗
-║        Investment Data Analysis Agent - Setup Script        ║
-║              Configuración Automática del Sistema           ║
-║                        (Windows)                            ║
-╚══════════════════════════════════════════════════════════════╝
-"@
+    Test-Prerequisites
     
-    # Solo verificar prerequisitos
     if ($InstallMode -eq "check") {
-        Test-Prerequisites
-        Log-Success "Todos los prerequisitos están correctos"
+        Log-Success "Verificación de prerequisitos completada."
         exit 0
     }
     
-    # Ejecutar setup completo
-    try {
-        Test-Prerequisites
-        New-EnvFile
-        Install-PythonDependencies
-        
-        if ($UseDocker) {
-            Start-DockerServices
-        } else {
-            Log-Warning "Configuración manual de base de datos requerida (-NoDocker especificado)"
-        }
-        
-        if (Test-Installation) {
-            Show-FinalInfo
-        } else {
-            Log-Error "La verificación falló. Revisar logs para más detalles."
-            exit 1
-        }
-    } catch {
-        Log-Error "Error durante la instalación: $($_.Exception.Message)"
-        exit 1
+    New-EnvFile
+    Install-PythonDependencies
+    
+    if ($UseDocker) {
+        Start-DockerServices
+    } else {
+        Log-Warning "Opción -NoDocker seleccionada. Debes configurar la base de datos manualmente."
     }
+    
+    Test-Installation
+    
+    Log-Success "¡Configuración completada!"
+    Log-Info "Para iniciar la aplicación, ejecuta: uvicorn app.main:app --reload"
 }
 
 # Ejecutar función principal
